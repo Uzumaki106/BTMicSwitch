@@ -117,7 +117,7 @@ class MainActivity : AppCompatActivity() {
                 setUiState(
                     isActive = false,
                     status = "Using Internal Mic",
-                    deviceText = getConnectedBtDeviceName()
+                    deviceText = getConnectedBtDeviceName() ?: "No device connected"
                 )
             }
             BluetoothScoService.STATE_BT_DISCONNECTED -> {
