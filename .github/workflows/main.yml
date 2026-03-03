@@ -16,13 +16,17 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      - name: Download gradle wrapper jar
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L -o gradle/wrapper/gradle-wrapper.jar \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar"
+
       - name: Fix gradlew permissions
         run: chmod +x ./gradlew
 
       - name: Build APK
         run: ./gradlew assembleDebug
-        env:
-          GRADLE_OPTS: ""
 
       - uses: actions/upload-artifact@v4
         with:
