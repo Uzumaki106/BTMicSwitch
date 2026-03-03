@@ -4,7 +4,7 @@ import android.app.*
 import android.bluetooth.*
 import android.content.*
 import android.media.AudioManager
-import android.media.MediaPlayer
+import android.media.AudioRecordingConfiguration
 import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -29,6 +29,8 @@ class BluetoothScoService : Service() {
 
         private const val SCO_RETRY_DELAY_MS = 2000L
         private const val SCO_MAX_RETRIES = 5
+        // Delay before restoring A2DP after recording stops (avoids flicker)
+        private const val RESTORE_A2DP_DELAY_MS = 800L
     }
 
     private lateinit var audioManager: AudioManager
@@ -39,18 +41,40 @@ class BluetoothScoService : Service() {
     private var isRunning = false
     private var scoRetryCount = 0
     private var connectedDeviceName = "Unknown Device"
+    private var isRecording = false
+    private var scoConnected = false
+
+    // Restore A2DP after recording stops (with small delay to avoid clicks)
+    private val restoreA2dpRunnable = Runnable {
+        if (isRunning && !isRecording) {
+            Log.d(TAG, "Recording stopped → restoring A2DP for playback")
+            switchToA2dpMode()
+        }
+    }
 
     /**
-     * Silent MediaPlayer playing a 1-second silent audio file in a loop.
-     *
-     * WHY: This is the key trick. When MODE_IN_COMMUNICATION is active with SCO,
-     * Samsung's HAL routes ALL output through SCO (earpiece, narrowband).
-     * By having an active MediaPlayer using AudioManager.STREAM_MUSIC, Android is
-     * forced to keep the MUSIC stream routed separately from the VOICE_CALL stream.
-     * This causes the OS to use A2DP for STREAM_MUSIC output while SCO handles
-     * the microphone input — giving us simultaneous BT mic + normal audio output.
+     * THE KEY: AudioRecordingCallback - fires instantly when any app
+     * starts or stops recording. No polling needed.
+     * - Recording starts → switch to SCO mode (BT mic active)
+     * - Recording stops  → switch to A2DP mode (normal audio out)
      */
-    private var silentPlayer: MediaPlayer? = null
+    private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+            val wasRecording = isRecording
+            isRecording = configs.isNotEmpty()
+
+            if (isRecording && !wasRecording) {
+                Log.d(TAG, "Recording STARTED — activating SCO mic")
+                handler.removeCallbacks(restoreA2dpRunnable)
+                switchToScoMode()
+            } else if (!isRecording && wasRecording) {
+                Log.d(TAG, "Recording STOPPED — scheduling A2DP restore")
+                // Small delay to avoid audio glitch if recording restarts quickly
+                handler.removeCallbacks(restoreA2dpRunnable)
+                handler.postDelayed(restoreA2dpRunnable, RESTORE_A2DP_DELAY_MS)
+            }
+        }
+    }
 
     // ─── SCO State Receiver ───────────────────────────────────────────────────
     private val scoReceiver = object : BroadcastReceiver() {
@@ -61,21 +85,20 @@ class BluetoothScoService : Service() {
                 AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
                     Log.d(TAG, "SCO connected")
                     scoRetryCount = 0
+                    scoConnected = true
                     isRunning = true
                     audioManager.isMicrophoneMute = false
-                    // Start silent player to force A2DP for music stream
-                    startSilentPlayer()
                     broadcastState(STATE_ACTIVE)
-                    updateNotification("BT Mic Active – $connectedDeviceName")
+                    updateNotification("BT Mic Ready – tap record in any app")
+                    // If already recording when SCO connects, stay in SCO mode
+                    if (!isRecording) switchToA2dpMode()
                 }
                 AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                    scoConnected = false
                     if (isRunning) {
-                        Log.w(TAG, "SCO disconnected, retry $scoRetryCount")
-                        stopSilentPlayer()
                         if (scoRetryCount < SCO_MAX_RETRIES) {
                             scoRetryCount++
                             broadcastState(STATE_CONNECTING)
-                            updateNotification("Reconnecting BT Mic…")
                             handler.postDelayed({ startSco() }, SCO_RETRY_DELAY_MS)
                         } else {
                             broadcastState(STATE_FAILED)
@@ -84,7 +107,7 @@ class BluetoothScoService : Service() {
                     }
                 }
                 AudioManager.SCO_AUDIO_STATE_ERROR -> {
-                    stopSilentPlayer()
+                    scoConnected = false
                     broadcastState(STATE_FAILED)
                     stopSelf()
                 }
@@ -97,17 +120,12 @@ class BluetoothScoService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    if (isRunning) {
-                        Log.w(TAG, "BT device disconnected")
-                        broadcastState(STATE_BT_DISCONNECTED)
-                        stopSelf()
-                    }
+                    if (isRunning) { broadcastState(STATE_BT_DISCONNECTED); stopSelf() }
                 }
                 BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
-                    val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
-                    if (state == BluetoothProfile.STATE_DISCONNECTED && isRunning) {
-                        broadcastState(STATE_BT_DISCONNECTED)
-                        stopSelf()
+                    val st = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
+                    if (st == BluetoothProfile.STATE_DISCONNECTED && isRunning) {
+                        broadcastState(STATE_BT_DISCONNECTED); stopSelf()
                     }
                 }
             }
@@ -127,6 +145,8 @@ class BluetoothScoService : Service() {
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
         }
         registerReceiver(bluetoothReceiver, btFilter)
+        // Register recording callback - instant notification when any app records
+        audioManager.registerAudioRecordingCallback(recordingCallback, handler)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -146,7 +166,7 @@ class BluetoothScoService : Service() {
         super.onDestroy()
         isRunning = false
         handler.removeCallbacksAndMessages(null)
-        stopSilentPlayer()
+        audioManager.unregisterAudioRecordingCallback(recordingCallback)
         stopSco()
         safeUnregister(scoReceiver)
         safeUnregister(bluetoothReceiver)
@@ -156,12 +176,58 @@ class BluetoothScoService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ─── SCO Management ───────────────────────────────────────────────────────
-    private fun startSco() {
-        Log.d(TAG, "Starting SCO")
+    // ─── Audio Mode Switching ─────────────────────────────────────────────────
+
+    /**
+     * SCO MODE: activated when recording starts.
+     * - Mic input → Bluetooth HFP (your neckband mic)
+     * - Audio output → still through BT earpiece/speaker during recording
+     * This is unavoidable on Samsung — SCO is a two-way channel.
+     */
+    private fun switchToScoMode() {
         try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager.isSpeakerphoneOn = false
+            audioManager.isBluetoothScoOn = true
+            if (!scoConnected) audioManager.startBluetoothSco()
+            Log.d(TAG, "Switched to SCO mode (recording)")
+            updateNotification("🔴 Recording with BT Mic – $connectedDeviceName")
+        } catch (e: Exception) {
+            Log.e(TAG, "SCO mode switch error: ${e.message}")
+        }
+    }
+
+    /**
+     * A2DP MODE: activated when not recording.
+     * - SCO kept alive in background so it can re-activate instantly for next recording
+     * - Audio output → A2DP (high quality BT stereo) or phone speaker
+     * - Mic input is inactive (no app is recording)
+     */
+    @Suppress("DEPRECATION")
+    private fun switchToA2dpMode() {
+        try {
+            // Switch mode to NORMAL so Samsung HAL releases SCO output lock
             audioManager.mode = AudioManager.MODE_NORMAL
             audioManager.isSpeakerphoneOn = false
+            // Keep isBluetoothScoOn = true so SCO channel stays warm
+            // but stop the active SCO stream so A2DP can take over output
+            audioManager.stopBluetoothSco()
+            audioManager.isBluetoothScoOn = false
+            scoConnected = false
+            // Restart SCO in background so it's ready for next recording
+            // (will reconnect quickly since BT is already paired/connected)
+            handler.postDelayed({ startSco() }, 500)
+            Log.d(TAG, "Switched to A2DP mode (not recording)")
+            updateNotification("BT Mic Ready – $connectedDeviceName")
+        } catch (e: Exception) {
+            Log.e(TAG, "A2DP mode switch error: ${e.message}")
+        }
+    }
+
+    private fun startSco() {
+        Log.d(TAG, "Starting SCO (attempt ${scoRetryCount + 1})")
+        try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             audioManager.isBluetoothScoOn = true
             audioManager.startBluetoothSco()
         } catch (e: Exception) {
@@ -183,86 +249,11 @@ class BluetoothScoService : Service() {
         }
     }
 
-    // ─── Silent Player (forces A2DP for output) ───────────────────────────────
-    /**
-     * Creates a MediaPlayer that plays a silent audio stream on STREAM_MUSIC.
-     *
-     * How it forces A2DP output:
-     * - SCO handles STREAM_VOICE_CALL (mic input)
-     * - STREAM_MUSIC is a separate audio stream that Android routes via A2DP
-     * - Having an active STREAM_MUSIC MediaPlayer prevents Samsung HAL from
-     *   collapsing all audio to the SCO earpiece
-     * - Result: mic in via SCO (BT narrowband) + audio out via A2DP (BT stereo)
-     *
-     * The silent audio is generated as a minimal valid WAV in memory — no file needed.
-     */
-    private fun startSilentPlayer() {
-        try {
-            stopSilentPlayer()
-            silentPlayer = MediaPlayer().apply {
-                // Use a tiny inline silent audio source
-                val silentUri = createSilentAudioUri()
-                setAudioStreamType(AudioManager.STREAM_MUSIC)
-                setDataSource(applicationContext, silentUri)
-                isLooping = true
-                setVolume(0f, 0f) // Completely silent
-                prepare()
-                start()
-            }
-            Log.d(TAG, "Silent player started — A2DP output should be active")
-        } catch (e: Exception) {
-            Log.e(TAG, "Silent player error: ${e.message}")
-            // Non-fatal — app still works, just output may go through SCO
-        }
-    }
-
-    private fun stopSilentPlayer() {
-        try {
-            silentPlayer?.apply {
-                if (isPlaying) stop()
-                release()
-            }
-            silentPlayer = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Silent player stop error: ${e.message}")
-        }
-    }
-
-    /**
-     * Creates a URI pointing to a minimal silent WAV file written to cache.
-     * 44 bytes = smallest valid WAV (0.0002 seconds of silence at 8000Hz mono).
-     */
-    private fun createSilentAudioUri(): android.net.Uri {
-        val file = java.io.File(cacheDir, "silent.wav")
-        if (!file.exists()) {
-            // Minimal valid WAV header + 2 bytes of silence
-            val wav = byteArrayOf(
-                0x52, 0x49, 0x46, 0x46, // "RIFF"
-                0x26, 0x00, 0x00, 0x00, // chunk size = 38
-                0x57, 0x41, 0x56, 0x45, // "WAVE"
-                0x66, 0x6D, 0x74, 0x20, // "fmt "
-                0x10, 0x00, 0x00, 0x00, // subchunk size = 16
-                0x01, 0x00,             // PCM format
-                0x01, 0x00,             // mono
-                0x40, 0x1F, 0x00, 0x00, // 8000 Hz sample rate
-                0x40, 0x1F, 0x00, 0x00, // byte rate
-                0x01, 0x00,             // block align
-                0x08, 0x00,             // 8 bits per sample
-                0x64, 0x61, 0x74, 0x61, // "data"
-                0x02, 0x00, 0x00, 0x00, // data size = 2
-                0x80.toByte(), 0x80.toByte() // 2 bytes of silence
-            )
-            file.writeBytes(wav)
-        }
-        return android.net.Uri.fromFile(file)
-    }
-
     // ─── Helpers ──────────────────────────────────────────────────────────────
     private fun getConnectedDeviceName(): String {
         return try {
-            val adapter = bluetoothManager.adapter ?: return "Unknown Device"
             @Suppress("MissingPermission")
-            adapter.bondedDevices?.firstOrNull()?.name ?: "BT Headset"
+            bluetoothManager.adapter?.bondedDevices?.firstOrNull()?.name ?: "BT Headset"
         } catch (e: Exception) { "BT Headset" }
     }
 
