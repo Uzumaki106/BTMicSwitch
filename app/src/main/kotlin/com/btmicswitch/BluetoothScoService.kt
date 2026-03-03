@@ -52,12 +52,8 @@ class BluetoothScoService : Service() {
             if (!isRunning) return
 
             // Filter out our own app
-            val externalRecording = configs.any { config ->
-                config.clientPackageName != packageName
-            }
-
             val wasRecording = isRecording
-            isRecording = externalRecording
+            isRecording = configs.isNotEmpty()
 
             if (isRecording && !wasRecording) {
                 Log.d(TAG, "External recording STARTED — enabling SCO mic")
@@ -152,8 +148,7 @@ class BluetoothScoService : Service() {
                 broadcastState(STATE_ACTIVE)
 
                 // Check if recording is already happening when user turns on the switch
-                val currentlyRecording = audioManager.activeRecordingConfigurations
-                    .any { it.clientPackageName != packageName }
+                val currentlyRecording = audioManager.activeRecordingConfigurations.isNotEmpty()
                 if (currentlyRecording) {
                     isRecording = true
                     enableSco()
