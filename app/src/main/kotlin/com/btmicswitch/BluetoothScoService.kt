@@ -29,7 +29,9 @@ class BluetoothScoService : Service() {
 
         private const val SCO_RETRY_DELAY_MS = 2000L
         private const val SCO_MAX_RETRIES = 5
-        private const val ROUTING_KEEPALIVE_MS = 3000L
+
+        // How often to poll microphone active state
+        private const val MIC_POLL_INTERVAL_MS = 500L
     }
 
     private lateinit var audioManager: AudioManager
@@ -40,14 +42,30 @@ class BluetoothScoService : Service() {
     private var isRunning = false
     private var scoRetryCount = 0
     private var connectedDeviceName = "Unknown Device"
+    private var isScoCurrentlyOn = false
 
-    // Periodically re-applies audio routing so playback stays working after recording
-    private val routingKeepalive = object : Runnable {
+    /**
+     * CORE STRATEGY: Poll microphone usage every 500ms.
+     * - If mic is being used by another app → activate SCO (BT mic)
+     * - If mic is NOT being used → deactivate SCO, restore A2DP for playback
+     *
+     * This way audio playback is NEVER blocked by SCO when not recording.
+     */
+    private val micPollingRunnable = object : Runnable {
         override fun run() {
-            if (isRunning) {
-                restorePlaybackRouting()
-                handler.postDelayed(this, ROUTING_KEEPALIVE_MS)
+            if (!isRunning) return
+
+            val micActive = isMicrophoneActiveByOtherApp()
+
+            if (micActive && !isScoCurrentlyOn) {
+                Log.d(TAG, "Mic now active — switching to SCO for BT mic input")
+                enableSco()
+            } else if (!micActive && isScoCurrentlyOn) {
+                Log.d(TAG, "Mic no longer active — switching back to A2DP for playback")
+                disableScoKeepBtAudio()
             }
+
+            handler.postDelayed(this, MIC_POLL_INTERVAL_MS)
         }
     }
 
@@ -55,41 +73,26 @@ class BluetoothScoService : Service() {
     private val scoReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
-            Log.d(TAG, "SCO state changed: $state")
+            Log.d(TAG, "SCO state: $state")
             when (state) {
                 AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
-                    Log.d(TAG, "SCO connected successfully")
+                    Log.d(TAG, "SCO connected")
                     scoRetryCount = 0
-                    isRunning = true
+                    isScoCurrentlyOn = true
                     audioManager.isMicrophoneMute = false
-                    // Restore playback routing right after SCO connects
-                    restorePlaybackRouting()
-                    handler.removeCallbacks(routingKeepalive)
-                    handler.postDelayed(routingKeepalive, ROUTING_KEEPALIVE_MS)
                     broadcastState(STATE_ACTIVE)
                     updateNotification("BT Mic Active – $connectedDeviceName")
                 }
                 AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                    isScoCurrentlyOn = false
                     if (isRunning) {
-                        Log.w(TAG, "SCO disconnected, retry $scoRetryCount")
-                        handler.removeCallbacks(routingKeepalive)
-                        if (scoRetryCount < SCO_MAX_RETRIES) {
-                            scoRetryCount++
-                            broadcastState(STATE_CONNECTING)
-                            updateNotification("Reconnecting BT Mic…")
-                            handler.postDelayed({ startSco() }, SCO_RETRY_DELAY_MS)
-                        } else {
-                            Log.e(TAG, "SCO failed after $SCO_MAX_RETRIES retries")
-                            broadcastState(STATE_FAILED)
-                            stopSelf()
-                        }
+                        Log.w(TAG, "SCO disconnected unexpectedly")
+                        // Don't retry here — let the mic poller handle re-enabling if needed
                     }
                 }
                 AudioManager.SCO_AUDIO_STATE_ERROR -> {
                     Log.e(TAG, "SCO error")
-                    handler.removeCallbacks(routingKeepalive)
-                    broadcastState(STATE_FAILED)
-                    stopSelf()
+                    isScoCurrentlyOn = false
                 }
             }
         }
@@ -100,14 +103,8 @@ class BluetoothScoService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    }
-                    Log.w(TAG, "Bluetooth device disconnected: ${device?.address}")
                     if (isRunning) {
+                        Log.w(TAG, "BT device disconnected")
                         broadcastState(STATE_BT_DISCONNECTED)
                         stopSelf()
                     }
@@ -115,16 +112,8 @@ class BluetoothScoService : Service() {
                 BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
                     val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
                     if (state == BluetoothProfile.STATE_DISCONNECTED && isRunning) {
-                        Log.w(TAG, "Headset profile disconnected")
                         broadcastState(STATE_BT_DISCONNECTED)
                         stopSelf()
-                    }
-                }
-                // Re-apply routing whenever another app changes audio output
-                AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
-                    if (isRunning) {
-                        Log.d(TAG, "Audio becoming noisy, re-applying routing")
-                        restorePlaybackRouting()
                     }
                 }
             }
@@ -145,7 +134,6 @@ class BluetoothScoService : Service() {
         val btFilter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
         registerReceiver(bluetoothReceiver, btFilter)
     }
@@ -154,9 +142,11 @@ class BluetoothScoService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 connectedDeviceName = getConnectedDeviceName()
-                startForeground(NOTIFICATION_ID, buildNotification("Connecting BT Mic…"))
-                broadcastState(STATE_CONNECTING)
-                startSco()
+                startForeground(NOTIFICATION_ID, buildNotification("BT Mic Ready – $connectedDeviceName"))
+                isRunning = true
+                broadcastState(STATE_ACTIVE)
+                // Start polling microphone state
+                handler.post(micPollingRunnable)
             }
             ACTION_STOP -> stopSelf()
         }
@@ -165,10 +155,10 @@ class BluetoothScoService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "Service destroying, stopping SCO")
+        Log.d(TAG, "Service destroying")
         isRunning = false
         handler.removeCallbacksAndMessages(null)
-        stopSco()
+        hardStopSco()
         safeUnregister(scoReceiver)
         safeUnregister(bluetoothReceiver)
         releaseWakeLock()
@@ -177,67 +167,80 @@ class BluetoothScoService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ─── SCO Management ───────────────────────────────────────────────────────
-    private fun startSco() {
-        Log.d(TAG, "Starting SCO (attempt ${scoRetryCount + 1})")
+    // ─── Mic Detection ────────────────────────────────────────────────────────
+    /**
+     * Detects if any app is currently recording audio.
+     * Uses AudioManager on API 29+ (Android 10) which is our minSdk.
+     */
+    private fun isMicrophoneActiveByOtherApp(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                audioManager.microphones.isNotEmpty() &&
+                        audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                            .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                   it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+            } catch (e: Exception) {
+                false
+            }
+        } else {
+            // Fallback: always keep SCO on for older devices
+            true
+        }
+    }
+
+    // ─── SCO Audio Routing ────────────────────────────────────────────────────
+    /**
+     * Enable SCO: routes microphone input through Bluetooth HFP.
+     * Called when recording is detected.
+     */
+    private fun enableSco() {
         try {
+            Log.d(TAG, "Enabling SCO for BT mic")
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             audioManager.isSpeakerphoneOn = false
             audioManager.isBluetoothScoOn = true
             audioManager.startBluetoothSco()
-            broadcastState(STATE_CONNECTING)
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting SCO: ${e.message}")
-            broadcastState(STATE_FAILED)
-            stopSelf()
+            Log.e(TAG, "Error enabling SCO: ${e.message}")
         }
     }
 
+    /**
+     * Disable SCO but keep Bluetooth audio active via A2DP.
+     * Called when recording stops — this is what restores audio playback.
+     *
+     * Key insight: stopping SCO lets Android switch back to A2DP profile
+     * automatically, which is the high-quality stereo Bluetooth audio used
+     * for music/playback. The mic routing is no longer needed when not recording.
+     */
     @Suppress("DEPRECATION")
-    private fun stopSco() {
+    private fun disableScoKeepBtAudio() {
+        try {
+            Log.d(TAG, "Disabling SCO, restoring A2DP playback")
+            audioManager.stopBluetoothSco()
+            audioManager.isBluetoothScoOn = false
+            // Switch to NORMAL mode so A2DP takes over for playback
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            isScoCurrentlyOn = false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disabling SCO: ${e.message}")
+        }
+    }
+
+    /**
+     * Hard stop SCO — used only on service destroy.
+     */
+    @Suppress("DEPRECATION")
+    private fun hardStopSco() {
         try {
             audioManager.stopBluetoothSco()
             audioManager.isBluetoothScoOn = false
             audioManager.isSpeakerphoneOn = false
             audioManager.mode = AudioManager.MODE_NORMAL
+            isScoCurrentlyOn = false
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping SCO: ${e.message}")
-        }
-    }
-
-    /**
-     * THE CORE FIX for simultaneous BT mic input + audio playback:
-     *
-     * Problem: MODE_IN_COMMUNICATION routes BOTH mic AND speaker through SCO (8kHz narrowband),
-     * which either silences playback or makes it sound terrible.
-     *
-     * Solution: Keep SCO alive only for mic input. Force audio OUTPUT to go through
-     * either A2DP (Bluetooth high quality) or the phone speaker by:
-     * 1. Keeping isBluetoothScoOn = true (mic stays on SCO)
-     * 2. Setting isSpeakerphoneOn = false (don't override to phone speaker)
-     * 3. Android will automatically use A2DP for playback when available
-     *
-     * This mirrors exactly how phone calls work: mic uses SCO, earpiece/A2DP for audio.
-     */
-    private fun restorePlaybackRouting() {
-        try {
-            // Keep SCO active for microphone
-            if (!audioManager.isBluetoothScoOn) {
-                audioManager.isBluetoothScoOn = true
-            }
-            // Disable speakerphone override
-            audioManager.isSpeakerphoneOn = false
-
-            // Check if A2DP output device is available and prefer it for playback
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val hasA2dp = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                    .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-                Log.d(TAG, "A2DP output available: $hasA2dp — playback will route through ${if (hasA2dp) "BT A2DP" else "phone speaker"}")
-            }
-
-            Log.d(TAG, "Routing: SCO mic=ON, Speakerphone=OFF, playback→A2DP/speaker")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error restoring playback routing: ${e.message}")
         }
     }
 
@@ -245,13 +248,8 @@ class BluetoothScoService : Service() {
     private fun getConnectedDeviceName(): String {
         return try {
             val adapter = bluetoothManager.adapter ?: return "Unknown Device"
-            val proxy = adapter.getProfileConnectionState(BluetoothProfile.HEADSET)
-            if (proxy == BluetoothProfile.STATE_CONNECTED) {
-                @Suppress("MissingPermission")
-                adapter.bondedDevices?.firstOrNull()?.name ?: "BT Headset"
-            } else {
-                "BT Headset"
-            }
+            @Suppress("MissingPermission")
+            adapter.bondedDevices?.firstOrNull()?.name ?: "BT Headset"
         } catch (e: Exception) {
             "BT Headset"
         }
@@ -269,9 +267,7 @@ class BluetoothScoService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "BT Mic Switch",
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "BT Mic Switch", NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Bluetooth microphone routing status"
                 setShowBadge(false)
@@ -283,8 +279,7 @@ class BluetoothScoService : Service() {
 
     private fun buildNotification(text: String): Notification {
         val pendingIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
+            this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val stopIntent = PendingIntent.getService(
@@ -313,17 +308,13 @@ class BluetoothScoService : Service() {
     private fun acquireWakeLock() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "BTMicSwitch::ScoWakeLock"
+            PowerManager.PARTIAL_WAKE_LOCK, "BTMicSwitch::ScoWakeLock"
         ).apply { acquire(10 * 60 * 1000L) }
     }
 
     private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { if (it.isHeld) it.release() }
-        } catch (e: Exception) {
-            Log.e(TAG, "WakeLock release error: ${e.message}")
-        }
+        try { wakeLock?.let { if (it.isHeld) it.release() } }
+        catch (e: Exception) { Log.e(TAG, "WakeLock error: ${e.message}") }
     }
 
     private fun safeUnregister(receiver: BroadcastReceiver) {
