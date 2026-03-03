@@ -250,7 +250,7 @@ class BluetoothScoService : Service() {
                 0x08, 0x00,             // 8 bits per sample
                 0x64, 0x61, 0x74, 0x61, // "data"
                 0x02, 0x00, 0x00, 0x00, // data size = 2
-                0x80, 0x80              // 2 bytes of silence
+                0x80.toByte(), 0x80.toByte() // 2 bytes of silence
             )
             file.writeBytes(wav)
         }
