@@ -160,7 +160,7 @@ class BluetoothScoService : Service() {
     private fun startSco() {
         Log.d(TAG, "Starting SCO")
         try {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager.mode = AudioManager.MODE_NORMAL
             audioManager.isSpeakerphoneOn = false
             audioManager.isBluetoothScoOn = true
             audioManager.startBluetoothSco()
