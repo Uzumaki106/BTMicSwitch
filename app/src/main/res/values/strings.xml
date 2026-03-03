@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BT Mic Switch</string>
+    <string name="status_active">BT Mic Active</string>
+    <string name="status_inactive">Using Internal Mic</string>
+    <string name="status_connecting">Connecting&#8230;</string>
+    <string name="status_failed">Connection Failed</string>
+    <string name="no_device">No device connected</string>
+</resources>

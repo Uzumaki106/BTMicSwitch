@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="24dp"
+        android:paddingTop="56dp"
+        android:paddingBottom="40dp"
+        android:gravity="center_horizontal">
+
+        <ImageView
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:src="@drawable/ic_mic_bt"
+            android:tint="@color/primary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="BT Mic Switch"
+            android:textSize="30sp"
+            android:textStyle="bold"
+            android:textColor="@color/on_background"
+            android:layout_marginTop="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Force all apps to record through your Bluetooth headset"
+            android:textSize="14sp"
+            android:textColor="@color/on_background_secondary"
+            android:gravity="center"
+            android:layout_marginTop="6dp"
+            android:paddingHorizontal="16dp" />
+
+        <androidx.cardview.widget.CardView
+            android:id="@+id/statusCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="40dp"
+            app:cardCornerRadius="20dp"
+            app:cardElevation="6dp"
+            app:cardBackgroundColor="@color/status_inactive_bg">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="20dp"
+                android:gravity="center_vertical">
+
+                <ImageView
+                    android:id="@+id/statusIndicator"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:src="@drawable/ic_indicator_inactive" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginStart="16dp">
+
+                    <TextView
+                        android:id="@+id/statusText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Using Internal Mic"
+                        android:textSize="20sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/status_inactive_text" />
+
+                    <ProgressBar
+                        android:id="@+id/progressBar"
+                        style="?android:attr/progressBarStyleSmall"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:visibility="gone"
+                        android:layout_marginTop="4dp" />
+
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="2dp"
+            app:cardBackgroundColor="@color/surface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <ImageView
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:src="@drawable/ic_bluetooth"
+                        android:tint="@color/primary" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Bluetooth Device"
+                        android:textSize="11sp"
+                        android:textAllCaps="true"
+                        android:letterSpacing="0.1"
+                        android:textColor="@color/on_background_secondary"
+                        android:layout_marginStart="8dp" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/btStatusChip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="No BT Device"
+                        android:textSize="11sp"
+                        app:chipMinHeight="26dp"
+                        app:chipBackgroundColor="@color/chip_disconnected"
+                        app:chipStrokeWidth="0dp" />
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/deviceName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="No device connected"
+                    android:textSize="17sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/on_background"
+                    android:layout_marginTop="10dp" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="8dp"
+            app:cardBackgroundColor="@color/surface">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:paddingTop="40dp"
+                android:paddingBottom="32dp">
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/toggleButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:scaleX="2.2"
+                    android:scaleY="2.2"
+                    app:thumbTint="@color/toggle_thumb"
+                    app:trackTint="@color/toggle_track" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TAP TO TOGGLE"
+                    android:textSize="11sp"
+                    android:textColor="@color/on_background_secondary"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.15"
+                    android:layout_marginTop="30dp" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            app:cardCornerRadius="14dp"
+            app:cardElevation="0dp"
+            app:cardBackgroundColor="@color/info_bg">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="&#8505; How it works"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/info_text" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="When ON, opens a Bluetooth SCO channel so any app using the microphone (camera, WhatsApp, voice recorder) will capture audio from your BT headset instead of the phone&#x2019;s built-in mic.\n\nA persistent foreground notification keeps the routing alive while you use other apps."
+                    android:textSize="13sp"
+                    android:textColor="@color/info_text"
+                    android:layout_marginTop="6dp"
+                    android:lineSpacingMultiplier="1.4" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+    </LinearLayout>
+</ScrollView>
